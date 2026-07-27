@@ -1,0 +1,3252 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6a6067c5-0052-40d4-a730-262dd1b0632f",
+              "leftValue": "={{ Object.keys($binary ?? {}).length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        416,
+        0
+      ],
+      "id": "800a31a2-3464-4ef0-8388-3e38e8f788bc",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5f136a1b-c92f-488a-953e-78bd8cc9421f",
+              "leftValue": "={{ Object.values($binary ?? {})[0]?.mimeType }}",
+              "rightValue": "^(application/pdf|image/jpeg|image/png)$",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        624,
+        0
+      ],
+      "id": "b1fd0ef3-4cf5-4c4b-818f-033c5113f15d",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "binaryPropertyName": "={{ Object.keys($binary ?? {})[0] }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        832,
+        0
+      ],
+      "id": "53bdf118-0401-4857-a55e-a0273cc12db5",
+      "name": "Upload a file"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ======================================================\n// INTERPRETAR RESPUESTA DE OPENAI\n// Convierte la salida del modelo en un objeto JSON limpio.\n// Conserva null cuando un dato no fue identificado.\n// ======================================================\n\nconst respuesta = $json;\n\n// ------------------------------------------------------\n// FUNCIONES AUXILIARES\n// ------------------------------------------------------\n\nfunction estaVacio(valor) {\n  return (\n    valor === null ||\n    valor === undefined ||\n    (typeof valor === 'string' && valor.trim() === '')\n  );\n}\n\nfunction textoONull(valor) {\n  if (estaVacio(valor)) {\n    return null;\n  }\n\n  return String(valor).trim();\n}\n\nfunction numeroONull(valor) {\n  if (estaVacio(valor)) {\n    return null;\n  }\n\n  // Si ya es un número válido, se conserva.\n  if (typeof valor === 'number') {\n    return Number.isFinite(valor) ? valor : null;\n  }\n\n  let texto = String(valor).trim();\n\n  // Elimina símbolos y espacios, pero conserva signos,\n  // puntos y comas para intentar interpretar el número.\n  texto = texto.replace(/[^\\d.,-]/g, '');\n\n  if (!texto) {\n    return null;\n  }\n\n  /*\n   * Normalización básica:\n   * 121.000,50  → 121000.50\n   * 121,000.50  → 121000.50\n   * 121000,50   → 121000.50\n   */\n\n  const tienePunto = texto.includes('.');\n  const tieneComa = texto.includes(',');\n\n  if (tienePunto && tieneComa) {\n    const ultimoPunto = texto.lastIndexOf('.');\n    const ultimaComa = texto.lastIndexOf(',');\n\n    if (ultimaComa > ultimoPunto) {\n      // Formato habitual en español: 121.000,50\n      texto = texto.replace(/\\./g, '').replace(',', '.');\n    } else {\n      // Formato habitual en inglés: 121,000.50\n      texto = texto.replace(/,/g, '');\n    }\n  } else if (tieneComa && !tienePunto) {\n    // Una coma se interpreta como separador decimal.\n    texto = texto.replace(',', '.');\n  }\n\n  const numero = Number(texto);\n\n  return Number.isFinite(numero) ? numero : null;\n}\n\nfunction enteroONull(valor) {\n  const numero = numeroONull(valor);\n\n  if (numero === null) {\n    return null;\n  }\n\n  return Math.round(numero);\n}\n\nfunction limpiarBloqueJson(texto) {\n  return texto\n    .trim()\n    .replace(/^```json\\s*/i, '')\n    .replace(/^```\\s*/i, '')\n    .replace(/\\s*```$/i, '')\n    .trim();\n}\n\n// ------------------------------------------------------\n// 1. LOCALIZAR EL CONTENIDO DEVUELTO POR OPENAI\n// ------------------------------------------------------\n\nlet contenido = null;\n\n// Caso 1: respuesta directa en output_text.\nif (\n  typeof respuesta.output_text === 'string' &&\n  respuesta.output_text.trim()\n) {\n  contenido = respuesta.output_text;\n}\n\n// Caso 2: estructura habitual del endpoint /v1/responses.\nif (contenido === null && Array.isArray(respuesta.output)) {\n  for (const elemento of respuesta.output) {\n    if (!Array.isArray(elemento.content)) {\n      continue;\n    }\n\n    const salidaTexto = elemento.content.find(\n      (item) =>\n        item &&\n        (item.type === 'output_text' || item.type === 'text') &&\n        typeof item.text === 'string',\n    );\n\n    if (salidaTexto) {\n      contenido = salidaTexto.text;\n      break;\n    }\n  }\n}\n\n// Caso 3: algunas respuestas pueden venir dentro de body.\nif (\n  contenido === null &&\n  respuesta.body &&\n  typeof respuesta.body.output_text === 'string'\n) {\n  contenido = respuesta.body.output_text;\n}\n\n// Caso 4: respuesta simulada ya convertida en objeto.\nif (\n  contenido === null &&\n  respuesta.factura &&\n  typeof respuesta.factura === 'object' &&\n  !Array.isArray(respuesta.factura)\n) {\n  contenido = respuesta.factura;\n}\n\n// Caso 5: el propio item ya contiene directamente\n// las propiedades esperadas de la factura.\nif (\n  contenido === null &&\n  (\n    Object.prototype.hasOwnProperty.call(respuesta, 'numero_factura') ||\n    Object.prototype.hasOwnProperty.call(respuesta, 'cuit_proveedor') ||\n    Object.prototype.hasOwnProperty.call(respuesta, 'total')\n  )\n) {\n  contenido = respuesta;\n}\n\nif (contenido === null) {\n  throw new Error(\n    'No se encontró texto ni un objeto de factura en la respuesta de OpenAI.',\n  );\n}\n\n// ------------------------------------------------------\n// 2. CONVERTIR EL CONTENIDO EN JSON\n// ------------------------------------------------------\n\nlet factura;\n\nif (\n  typeof contenido === 'object' &&\n  contenido !== null &&\n  !Array.isArray(contenido)\n) {\n  factura = contenido;\n} else {\n  const textoLimpio = limpiarBloqueJson(String(contenido));\n\n  try {\n    factura = JSON.parse(textoLimpio);\n  } catch (error) {\n    throw new Error(\n      `OpenAI devolvió un JSON inválido: ${error.message}. ` +\n      `Contenido recibido: ${textoLimpio.slice(0, 500)}`,\n    );\n  }\n}\n\nif (\n  typeof factura !== 'object' ||\n  factura === null ||\n  Array.isArray(factura)\n) {\n  throw new Error(\n    'La respuesta de OpenAI no contiene un objeto JSON válido de factura.',\n  );\n}\n\n// Algunos modelos podrían envolver el resultado en una propiedad.\nif (\n  factura.factura &&\n  typeof factura.factura === 'object' &&\n  !Array.isArray(factura.factura)\n) {\n  factura = factura.factura;\n}\n\n// ------------------------------------------------------\n// 3. NORMALIZAR LOS CAMPOS ESPERADOS\n// ------------------------------------------------------\n\nconst facturaInterpretada = {\n  proveedor: textoONull(factura.proveedor),\n\n  cuit_proveedor: textoONull(factura.cuit_proveedor),\n\n  numero_factura: textoONull(factura.numero_factura),\n\n  fecha_emision: textoONull(factura.fecha_emision),\n\n  fecha_vencimiento: textoONull(factura.fecha_vencimiento),\n\n  moneda: textoONull(factura.moneda),\n\n  subtotal: numeroONull(factura.subtotal),\n\n  iva: numeroONull(factura.iva),\n\n  otros_impuestos: numeroONull(factura.otros_impuestos),\n\n  total: numeroONull(factura.total),\n\n  orden_compra: textoONull(factura.orden_compra),\n\n  concepto: textoONull(factura.concepto),\n\n  categoria_gasto: textoONull(factura.categoria_gasto),\n\n  resumen_ia: textoONull(factura.resumen_ia),\n\n  confianza_extraccion: enteroONull(\n    factura.confianza_extraccion,\n  ),\n};\n\n// ------------------------------------------------------\n// 4. DEVOLVER EL RESULTADO\n// ------------------------------------------------------\n\nreturn {\n  json: facturaInterpretada,\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        0
+      ],
+      "id": "b1b6d6e1-35b9-4564-b895-068e0f6cfade",
+      "name": "Interpretar respuesta IA"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Facturas"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Número de factura": "={{ $('Validar datos extraídos de la factura').item.json.numero_factura }}",
+            "Fecha de recepción": "={{ $now }}",
+            "Canal de entrada": "mail",
+            "Fecha de emisión": "={{ $('Validar datos extraídos de la factura').item.json.fecha_emision }}",
+            "Importe total": "={{ $('Validar datos extraídos de la factura').item.json.total }}",
+            "Resumen IA": "={{ $('Validar datos extraídos de la factura').item.json.resumen_ia }}",
+            "Motivo de excepción": "={{ $('Validar datos extraídos de la factura').item.json.motivo_revision }}",
+            "Estado": "={{ $('Validar datos extraídos de la factura').item.json.estado_sugerido }}",
+            "Moneda": "={{\n  $('Validar datos extraídos de la factura').item.json.moneda === 'ARS'\n    ? 'pesos'\n    : $('Validar datos extraídos de la factura').item.json.moneda === 'USD'\n      ? 'dolares'\n      : $('Validar datos extraídos de la factura').item.json.moneda === 'EUR'\n        ? 'Euros'\n        : ''\n}}",
+            "Categoría de gasto": "={{\n  $('Validar datos extraídos de la factura').item.json.categoria_gasto || 'Otros'\n}}",
+            "Órdenes de compra": "={{ $('Validar datos extraídos de la factura').item.json.orden_compra }}",
+            "Gmail Thread ID": "={{ $('Obtener correo y descargar factura').item.json.threadId }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ID factura",
+              "displayName": "ID factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Número de factura",
+              "displayName": "Número de factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Archivo factura",
+              "displayName": "Archivo factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de recepción",
+              "displayName": "Fecha de recepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Canal de entrada",
+              "displayName": "Canal de entrada",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "mail",
+                  "value": "mail"
+                },
+                {
+                  "name": "Webhook",
+                  "value": "Webhook"
+                },
+                {
+                  "name": "Portal de proveedores",
+                  "value": "Portal de proveedores"
+                },
+                {
+                  "name": "Carga manual",
+                  "value": "Carga manual"
+                },
+                {
+                  "name": "API ERP",
+                  "value": "API ERP"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Proveedor",
+              "displayName": "Proveedor",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Orden de compra",
+              "displayName": "Orden de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de emisión",
+              "displayName": "Fecha de emisión",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Moneda",
+              "displayName": "Moneda",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "pesos",
+                  "value": "pesos"
+                },
+                {
+                  "name": "dolares",
+                  "value": "dolares"
+                },
+                {
+                  "name": "Euros",
+                  "value": "Euros"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Importe total",
+              "displayName": "Importe total",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Categoría de gasto",
+              "displayName": "Categoría de gasto",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Servicios",
+                  "value": "Servicios"
+                },
+                {
+                  "name": "Tecnología",
+                  "value": "Tecnología"
+                },
+                {
+                  "name": "Infraestructura",
+                  "value": "Infraestructura"
+                },
+                {
+                  "name": "Logística",
+                  "value": "Logística"
+                },
+                {
+                  "name": "Marketing",
+                  "value": "Marketing"
+                },
+                {
+                  "name": "Capacitación",
+                  "value": "Capacitación"
+                },
+                {
+                  "name": "Compras generales",
+                  "value": "Compras generales"
+                },
+                {
+                  "name": "Mantenimiento",
+                  "value": "Mantenimiento"
+                },
+                {
+                  "name": "Impuestos",
+                  "value": "Impuestos"
+                },
+                {
+                  "name": "Viajes",
+                  "value": "Viajes"
+                },
+                {
+                  "name": "Otros",
+                  "value": "Otros"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Resumen IA",
+              "displayName": "Resumen IA",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Motivo de excepción",
+              "displayName": "Motivo de excepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Estado",
+              "displayName": "Estado",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "En validación inicial",
+                  "value": "En validación inicial"
+                },
+                {
+                  "name": "Procesado por IA",
+                  "value": "Procesado por IA"
+                },
+                {
+                  "name": "Requiere revisión",
+                  "value": "Requiere revisión"
+                },
+                {
+                  "name": "Pendiente de aprobación",
+                  "value": "Pendiente de aprobación"
+                },
+                {
+                  "name": "Aprobado por humano",
+                  "value": "Aprobado por humano"
+                },
+                {
+                  "name": "Rechazado por humano",
+                  "value": "Rechazado por humano"
+                },
+                {
+                  "name": "Error IA",
+                  "value": "Error IA"
+                },
+                {
+                  "name": "Finalizado",
+                  "value": "Finalizado"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Responsable aprobación",
+              "displayName": "Responsable aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de aprobación",
+              "displayName": "Fecha de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Última actualización",
+              "displayName": "Última actualización",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Órdenes de compra",
+              "displayName": "Órdenes de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Aprobaciones",
+              "displayName": "Aprobaciones",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Logs de errores",
+              "displayName": "Logs de errores",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Gmail Thread ID",
+              "displayName": "Gmail Thread ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        0
+      ],
+      "id": "1009cbd6-e528-42b1-9ccb-77e49920e04c",
+      "name": "Guardar factura"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fde9b179-7de2-480c-8246-11e640bc71dd",
+              "leftValue": "={{ $('Validar datos extraídos de la factura').item.json.requiere_revision }}",
+              "rightValue": "Pendiente de revisión",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1744,
+        0
+      ],
+      "id": "fd03f2e7-13fe-43c4-944d-e7d0ba4a61ac",
+      "name": "¿Requiere revisión?"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Aprobaciones"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Estado de aprobación": "Pendiente",
+            "Factura": "={{ [ $('Guardar factura').item.json.id ] }}",
+            "Fecha de solicitud": "={{ $now }}",
+            "Canal de aprobación": "Correo electrónico"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ID Aprobador",
+              "displayName": "ID Aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Factura",
+              "displayName": "Factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Aprobador",
+              "displayName": "Aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de solicitud",
+              "displayName": "Fecha de solicitud",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Canal de aprobación",
+              "displayName": "Canal de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Correo electrónico",
+                  "value": "Correo electrónico"
+                },
+                {
+                  "name": "Slack",
+                  "value": "Slack"
+                },
+                {
+                  "name": "Microsoft Teams",
+                  "value": "Microsoft Teams"
+                },
+                {
+                  "name": "Formulario web",
+                  "value": "Formulario web"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Estado de aprobación",
+              "displayName": "Estado de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "Aprobada",
+                  "value": "Aprobada"
+                },
+                {
+                  "name": "Rechazada",
+                  "value": "Rechazada"
+                },
+                {
+                  "name": "Devuelta para revisión",
+                  "value": "Devuelta para revisión"
+                },
+                {
+                  "name": "Vencida",
+                  "value": "Vencida"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de respuesta",
+              "displayName": "Fecha de respuesta",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Comentario del aprobador",
+              "displayName": "Comentario del aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Última modificación",
+              "displayName": "Última modificación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        1968,
+        32
+      ],
+      "id": "3d217d7e-be5a-4708-87cd-c5ed0b6b57e4",
+      "name": "Crear aprobación pendiente"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Logs de errores"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Factura": "={{ [$('Guardar factura').item.json.id] }}",
+            "Tipo de error": "Error de validación",
+            "Descripción del error": "={{ $('Validar datos extraídos de la factura').item.json.motivo_revision }}",
+            "Fecha y hora del error": "={{ $now }}",
+            "Estado del error": "Pendiente",
+            "Etapa del proceso": "Validación de proveedor"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ID de error",
+              "displayName": "ID de error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Factura",
+              "displayName": "Factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha y hora del error",
+              "displayName": "Fecha y hora del error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Etapa del proceso",
+              "displayName": "Etapa del proceso",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Recepción de factura",
+                  "value": "Recepción de factura"
+                },
+                {
+                  "name": "Registro en Airtable",
+                  "value": "Registro en Airtable"
+                },
+                {
+                  "name": "Extracción con IA",
+                  "value": "Extracción con IA"
+                },
+                {
+                  "name": "Validación de proveedor",
+                  "value": "Validación de proveedor"
+                },
+                {
+                  "name": "Validación de orden de compra",
+                  "value": "Validación de orden de compra"
+                },
+                {
+                  "name": "Validación de duplicados",
+                  "value": "Validación de duplicados"
+                },
+                {
+                  "name": "Aprobación humana",
+                  "value": "Aprobación humana"
+                },
+                {
+                  "name": "Notificación",
+                  "value": "Notificación"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Tipo de error",
+              "displayName": "Tipo de error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Error de archivo",
+                  "value": "Error de archivo"
+                },
+                {
+                  "name": "Error de integración",
+                  "value": "Error de integración"
+                },
+                {
+                  "name": "Error de procesamiento IA",
+                  "value": "Error de procesamiento IA"
+                },
+                {
+                  "name": "Error de datos",
+                  "value": "Error de datos"
+                },
+                {
+                  "name": "Error de validación",
+                  "value": "Error de validación"
+                },
+                {
+                  "name": "Error de aprobación",
+                  "value": "Error de aprobación"
+                },
+                {
+                  "name": "Error de notificación",
+                  "value": "Error de notificación"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Descripción del error",
+              "displayName": "Descripción del error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Estado del error",
+              "displayName": "Estado del error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "En revisión",
+                  "value": "En revisión"
+                },
+                {
+                  "name": "Resuelto",
+                  "value": "Resuelto"
+                },
+                {
+                  "name": "Descartado",
+                  "value": "Descartado"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de resolución",
+              "displayName": "Fecha de resolución",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Observaciones de resolución",
+              "displayName": "Observaciones de resolución",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        1952,
+        -112
+      ],
+      "id": "7ec7ea98-e13d-4a1f-acfb-bf15a86b7ab4",
+      "name": "Registrar error de validación"
+    },
+    {
+      "parameters": {
+        "sendTo": "correo-demostracion@example.com",
+        "subject": "=Solicitud de aprobación de factura {{ $('Validar datos extraídos de la factura').item.json.numero_factura }}",
+        "message": "=<h2>Solicitud de aprobación de factura</h2>\n\n<p>Se recibió una factura que requiere aprobación humana.</p>\n\n<p><strong>Número de factura:</strong> {{ $('Validar datos extraídos de la factura').item.json.numero_factura }}</p>\n\n<p><strong>Proveedor:</strong> {{ $('Validar datos extraídos de la factura').item.json.proveedor }}</p>\n\n<p><strong>Fecha de emisión:</strong> {{ $('Validar datos extraídos de la factura').item.json.fecha_emision }}</p>\n\n<p><strong>Moneda:</strong> {{ $('Validar datos extraídos de la factura').item.json.moneda }}</p>\n\n<p><strong>Total:</strong> {{ $('Validar datos extraídos de la factura').item.json.total }}</p>\n\n<p><strong>Orden de compra:</strong> {{ $('Validar datos extraídos de la factura').item.json.orden_compra }}</p>\n\n<p><strong>Resumen generado por IA:</strong><br>\n{{ $('Validar datos extraídos de la factura').item.json.resumen_ia }}</p>\n\n<hr>\n\n<p><strong>Para revisar esta factura haga clic en el siguiente enlace:</strong></p>\n\n<p>\n<a href=\"{{ $execution.resumeFormUrl }}\">\nAbrir formulario de aprobación\n</a>\n</p>\n\n<p>El flujo permanecerá detenido hasta que se complete el formulario de aprobación.</p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2368,
+        32
+      ],
+      "id": "38dc17ca-8ded-4d4f-8940-272c9f725a6b",
+      "name": "Send a message"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "8ab7fdd4-4d4b-4598-8235-cb1b5495ee4b",
+              "leftValue": "={{ $json.decision_aprobador }}",
+              "rightValue": "Aprobar",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2992,
+        32
+      ],
+      "id": "bb17b0f8-fae1-4a42-ae1d-227d60eaed48",
+      "name": "¿Aprobó la factura?"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Aprobaciones"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Estado de aprobación": "Aprobada",
+            "id": "={{ $('Crear aprobación pendiente').item.json.id }}",
+            "Fecha de respuesta": "={{ $now }}",
+            "Comentario del aprobador": "={{ $('Esperar decisión del aprobador').item.json[\"comentario_aprobador\"] }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "ID Aprobador",
+              "displayName": "ID Aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Factura",
+              "displayName": "Factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Aprobador",
+              "displayName": "Aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de solicitud",
+              "displayName": "Fecha de solicitud",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Canal de aprobación",
+              "displayName": "Canal de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Correo electrónico",
+                  "value": "Correo electrónico"
+                },
+                {
+                  "name": "Slack",
+                  "value": "Slack"
+                },
+                {
+                  "name": "Microsoft Teams",
+                  "value": "Microsoft Teams"
+                },
+                {
+                  "name": "Formulario web",
+                  "value": "Formulario web"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Estado de aprobación",
+              "displayName": "Estado de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "Aprobada",
+                  "value": "Aprobada"
+                },
+                {
+                  "name": "Rechazada",
+                  "value": "Rechazada"
+                },
+                {
+                  "name": "Devuelta para revisión",
+                  "value": "Devuelta para revisión"
+                },
+                {
+                  "name": "Vencida",
+                  "value": "Vencida"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de respuesta",
+              "displayName": "Fecha de respuesta",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Comentario del aprobador",
+              "displayName": "Comentario del aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Última modificación",
+              "displayName": "Última modificación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        3200,
+        -64
+      ],
+      "id": "0b4fb8cd-3979-4a62-92e5-1ce3b47d7e4a",
+      "name": "Update record"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Facturas"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID factura": "={{ $('Guardar factura').item.json.fields['ID factura'] }}",
+            "Estado": "Aprobado por humano",
+            "Fecha de aprobación": "={{ $now }}"
+          },
+          "matchingColumns": [
+            "ID factura"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "ID factura",
+              "displayName": "ID factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Número de factura",
+              "displayName": "Número de factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Archivo factura",
+              "displayName": "Archivo factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de recepción",
+              "displayName": "Fecha de recepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Canal de entrada",
+              "displayName": "Canal de entrada",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "mail",
+                  "value": "mail"
+                },
+                {
+                  "name": "Webhook",
+                  "value": "Webhook"
+                },
+                {
+                  "name": "Portal de proveedores",
+                  "value": "Portal de proveedores"
+                },
+                {
+                  "name": "Carga manual",
+                  "value": "Carga manual"
+                },
+                {
+                  "name": "API ERP",
+                  "value": "API ERP"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Proveedor",
+              "displayName": "Proveedor",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Orden de compra",
+              "displayName": "Orden de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de emisión",
+              "displayName": "Fecha de emisión",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Moneda",
+              "displayName": "Moneda",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "pesos",
+                  "value": "pesos"
+                },
+                {
+                  "name": "dolares",
+                  "value": "dolares"
+                },
+                {
+                  "name": "Euros",
+                  "value": "Euros"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Importe total",
+              "displayName": "Importe total",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Categoría de gasto",
+              "displayName": "Categoría de gasto",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Servicios",
+                  "value": "Servicios"
+                },
+                {
+                  "name": "Tecnología",
+                  "value": "Tecnología"
+                },
+                {
+                  "name": "Infraestructura",
+                  "value": "Infraestructura"
+                },
+                {
+                  "name": "Logística",
+                  "value": "Logística"
+                },
+                {
+                  "name": "Marketing",
+                  "value": "Marketing"
+                },
+                {
+                  "name": "Capacitación",
+                  "value": "Capacitación"
+                },
+                {
+                  "name": "Compras generales",
+                  "value": "Compras generales"
+                },
+                {
+                  "name": "Mantenimiento",
+                  "value": "Mantenimiento"
+                },
+                {
+                  "name": "Impuestos",
+                  "value": "Impuestos"
+                },
+                {
+                  "name": "Viajes",
+                  "value": "Viajes"
+                },
+                {
+                  "name": "Otros",
+                  "value": "Otros"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Resumen IA",
+              "displayName": "Resumen IA",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Motivo de excepción",
+              "displayName": "Motivo de excepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Estado",
+              "displayName": "Estado",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "En validación inicial",
+                  "value": "En validación inicial"
+                },
+                {
+                  "name": "Procesado por IA",
+                  "value": "Procesado por IA"
+                },
+                {
+                  "name": "Requiere revisión",
+                  "value": "Requiere revisión"
+                },
+                {
+                  "name": "Pendiente de aprobación",
+                  "value": "Pendiente de aprobación"
+                },
+                {
+                  "name": "Aprobado por humano",
+                  "value": "Aprobado por humano"
+                },
+                {
+                  "name": "Rechazado por humano",
+                  "value": "Rechazado por humano"
+                },
+                {
+                  "name": "Error IA",
+                  "value": "Error IA"
+                },
+                {
+                  "name": "Finalizado",
+                  "value": "Finalizado"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Responsable aprobación",
+              "displayName": "Responsable aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de aprobación",
+              "displayName": "Fecha de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Última actualización",
+              "displayName": "Última actualización",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Órdenes de compra",
+              "displayName": "Órdenes de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Aprobaciones",
+              "displayName": "Aprobaciones",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Logs de errores",
+              "displayName": "Logs de errores",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Gmail Thread ID",
+              "displayName": "Gmail Thread ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        3408,
+        -64
+      ],
+      "id": "8dc7d476-84fb-4a56-be99-4124ba8ccde7",
+      "name": "Actualizar factura - Aprobada"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Aprobaciones"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $('Crear aprobación pendiente').item.json.id }}",
+            "Estado de aprobación": "Rechazada",
+            "Fecha de respuesta": "={{ $now }}",
+            "Comentario del aprobador": "={{ $('Esperar decisión del aprobador').item.json[\"comentario_aprobador\"] }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "ID Aprobador",
+              "displayName": "ID Aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Factura",
+              "displayName": "Factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Aprobador",
+              "displayName": "Aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de solicitud",
+              "displayName": "Fecha de solicitud",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Canal de aprobación",
+              "displayName": "Canal de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Correo electrónico",
+                  "value": "Correo electrónico"
+                },
+                {
+                  "name": "Slack",
+                  "value": "Slack"
+                },
+                {
+                  "name": "Microsoft Teams",
+                  "value": "Microsoft Teams"
+                },
+                {
+                  "name": "Formulario web",
+                  "value": "Formulario web"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Estado de aprobación",
+              "displayName": "Estado de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "Aprobada",
+                  "value": "Aprobada"
+                },
+                {
+                  "name": "Rechazada",
+                  "value": "Rechazada"
+                },
+                {
+                  "name": "Devuelta para revisión",
+                  "value": "Devuelta para revisión"
+                },
+                {
+                  "name": "Vencida",
+                  "value": "Vencida"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de respuesta",
+              "displayName": "Fecha de respuesta",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Comentario del aprobador",
+              "displayName": "Comentario del aprobador",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Última modificación",
+              "displayName": "Última modificación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        3200,
+        128
+      ],
+      "id": "72ea94ea-a2cf-4df8-bc8a-ed03e11b78cb",
+      "name": "Update record1"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Facturas"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID factura": "={{ $('Guardar factura').item.json.fields['ID factura'] }}",
+            "Estado": "Rechazado por humano"
+          },
+          "matchingColumns": [
+            "ID factura"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "ID factura",
+              "displayName": "ID factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Número de factura",
+              "displayName": "Número de factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Archivo factura",
+              "displayName": "Archivo factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de recepción",
+              "displayName": "Fecha de recepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Canal de entrada",
+              "displayName": "Canal de entrada",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "mail",
+                  "value": "mail"
+                },
+                {
+                  "name": "Webhook",
+                  "value": "Webhook"
+                },
+                {
+                  "name": "Portal de proveedores",
+                  "value": "Portal de proveedores"
+                },
+                {
+                  "name": "Carga manual",
+                  "value": "Carga manual"
+                },
+                {
+                  "name": "API ERP",
+                  "value": "API ERP"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Proveedor",
+              "displayName": "Proveedor",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Orden de compra",
+              "displayName": "Orden de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de emisión",
+              "displayName": "Fecha de emisión",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Moneda",
+              "displayName": "Moneda",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "pesos",
+                  "value": "pesos"
+                },
+                {
+                  "name": "dolares",
+                  "value": "dolares"
+                },
+                {
+                  "name": "Euros",
+                  "value": "Euros"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Importe total",
+              "displayName": "Importe total",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Categoría de gasto",
+              "displayName": "Categoría de gasto",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Servicios",
+                  "value": "Servicios"
+                },
+                {
+                  "name": "Tecnología",
+                  "value": "Tecnología"
+                },
+                {
+                  "name": "Infraestructura",
+                  "value": "Infraestructura"
+                },
+                {
+                  "name": "Logística",
+                  "value": "Logística"
+                },
+                {
+                  "name": "Marketing",
+                  "value": "Marketing"
+                },
+                {
+                  "name": "Capacitación",
+                  "value": "Capacitación"
+                },
+                {
+                  "name": "Compras generales",
+                  "value": "Compras generales"
+                },
+                {
+                  "name": "Mantenimiento",
+                  "value": "Mantenimiento"
+                },
+                {
+                  "name": "Impuestos",
+                  "value": "Impuestos"
+                },
+                {
+                  "name": "Viajes",
+                  "value": "Viajes"
+                },
+                {
+                  "name": "Otros",
+                  "value": "Otros"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Resumen IA",
+              "displayName": "Resumen IA",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Motivo de excepción",
+              "displayName": "Motivo de excepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Estado",
+              "displayName": "Estado",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "En validación inicial",
+                  "value": "En validación inicial"
+                },
+                {
+                  "name": "Procesado por IA",
+                  "value": "Procesado por IA"
+                },
+                {
+                  "name": "Requiere revisión",
+                  "value": "Requiere revisión"
+                },
+                {
+                  "name": "Pendiente de aprobación",
+                  "value": "Pendiente de aprobación"
+                },
+                {
+                  "name": "Aprobado por humano",
+                  "value": "Aprobado por humano"
+                },
+                {
+                  "name": "Rechazado por humano",
+                  "value": "Rechazado por humano"
+                },
+                {
+                  "name": "Error IA",
+                  "value": "Error IA"
+                },
+                {
+                  "name": "Finalizado",
+                  "value": "Finalizado"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Responsable aprobación",
+              "displayName": "Responsable aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de aprobación",
+              "displayName": "Fecha de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Última actualización",
+              "displayName": "Última actualización",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Órdenes de compra",
+              "displayName": "Órdenes de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Aprobaciones",
+              "displayName": "Aprobaciones",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Logs de errores",
+              "displayName": "Logs de errores",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Gmail Thread ID",
+              "displayName": "Gmail Thread ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        3408,
+        128
+      ],
+      "id": "2d0006c9-ad6d-4978-9e1f-cb2d1448b394",
+      "name": "Actualizar factura - Rechazada"
+    },
+    {
+      "parameters": {
+        "sendTo": "correo-demostracion@example.com",
+        "subject": "Factura rechazada - Requiere revisión",
+        "message": "=<h2>Factura rechazada</h2>  <p>La factura fue revisada durante el proceso de aprobación humana y no cumplió con los criterios establecidos.</p>  <p><strong>Número de factura:</strong> {{ $('Validar datos extraídos de la factura').item.json.numero_factura }}</p>  <p><strong>Proveedor:</strong> {{ $('Validar datos extraídos de la factura').item.json.proveedor }}</p>  <p><strong>Orden de compra:</strong> {{ $('Validar datos extraídos de la factura').item.json.orden_compra }}</p>  <p><strong>Motivo del rechazo:</strong><br> {{ $('Esperar decisión del aprobador').item.json[\"comentario_aprobador\"] }} </p>  <hr>  <p>Por favor, revise la información y realice las correcciones necesarias antes de reenviar la factura para su procesamiento.</p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3616,
+        128
+      ],
+      "id": "08d4292a-b236-4e2e-afbb-b8feab5e66b3",
+      "name": "Notificar rechazo de factura"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Logs de errores"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Fecha y hora del error": "={{ $now }}",
+            "Etapa del proceso": "Extracción con IA",
+            "Tipo de error": "Error de procesamiento IA",
+            "Descripción del error": "Error al invocar la API de IA.",
+            "Estado del error": "Pendiente"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ID de error",
+              "displayName": "ID de error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Factura",
+              "displayName": "Factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha y hora del error",
+              "displayName": "Fecha y hora del error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Etapa del proceso",
+              "displayName": "Etapa del proceso",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Recepción de factura",
+                  "value": "Recepción de factura"
+                },
+                {
+                  "name": "Registro en Airtable",
+                  "value": "Registro en Airtable"
+                },
+                {
+                  "name": "Extracción con IA",
+                  "value": "Extracción con IA"
+                },
+                {
+                  "name": "Validación de proveedor",
+                  "value": "Validación de proveedor"
+                },
+                {
+                  "name": "Validación de orden de compra",
+                  "value": "Validación de orden de compra"
+                },
+                {
+                  "name": "Validación de duplicados",
+                  "value": "Validación de duplicados"
+                },
+                {
+                  "name": "Aprobación humana",
+                  "value": "Aprobación humana"
+                },
+                {
+                  "name": "Notificación",
+                  "value": "Notificación"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Tipo de error",
+              "displayName": "Tipo de error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Error de archivo",
+                  "value": "Error de archivo"
+                },
+                {
+                  "name": "Error de integración",
+                  "value": "Error de integración"
+                },
+                {
+                  "name": "Error de procesamiento IA",
+                  "value": "Error de procesamiento IA"
+                },
+                {
+                  "name": "Error de datos",
+                  "value": "Error de datos"
+                },
+                {
+                  "name": "Error de validación",
+                  "value": "Error de validación"
+                },
+                {
+                  "name": "Error de aprobación",
+                  "value": "Error de aprobación"
+                },
+                {
+                  "name": "Error de notificación",
+                  "value": "Error de notificación"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Descripción del error",
+              "displayName": "Descripción del error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Estado del error",
+              "displayName": "Estado del error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "En revisión",
+                  "value": "En revisión"
+                },
+                {
+                  "name": "Resuelto",
+                  "value": "Resuelto"
+                },
+                {
+                  "name": "Descartado",
+                  "value": "Descartado"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Fecha de resolución",
+              "displayName": "Fecha de resolución",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Observaciones de resolución",
+              "displayName": "Observaciones de resolución",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        1216,
+        176
+      ],
+      "id": "6476d2ee-bd32-41ab-9e2d-718d84148f39",
+      "name": "Create a record"
+    },
+    {
+      "parameters": {
+        "sendTo": "correo-demostracion@example.com",
+        "subject": "Error en el procesamiento de IA - Revisión requerida",
+        "message": "=<h2>Error durante el procesamiento de la IA</h2>  <p>Se produjo un error durante la llamada a la API de Inteligencia Artificial.</p>  <p><strong>Fecha:</strong> {{ $now }}</p>  <p><strong>Etapa:</strong> Extracción con IA</p>  <p><strong>Tipo de error:</strong> Error de procesamiento IA</p>  <p><strong>Descripción:</strong></p>  <p>Error al invocar la API de IA.</p>  <hr>  <p>Se registró el incidente en la tabla <strong>Logs de errores</strong> para su revisión.</p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1424,
+        176
+      ],
+      "id": "b955084a-aae8-4713-8dd4-972b39cd63d3",
+      "name": "Notificar error de procesamiento IA"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "labelIds": [
+            "REEMPLAZAR_CON_LABEL_ID_DE_GMAIL"
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "2347cca6-9eac-46eb-8349-a47e5fe7d441",
+      "name": "Recepción de factura por Gmail"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "messageId": "={{ $json.id }}",
+        "simple": false,
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "b5b27d26-835c-4cfc-9351-6943e7d79e8e",
+      "name": "Obtener correo y descargar factura"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/responses",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4.1-mini\",\n  \"max_output_tokens\": 1000,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_id\": \"{{ $json.id }}\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Analiza la factura adjunta y devuelve exclusivamente un JSON válido, sin markdown, sin explicaciones y sin texto adicional. No inventes datos. Devuelve exactamente esta estructura: {\\\"proveedor\\\":\\\"\\\",\\\"cuit_proveedor\\\":\\\"\\\",\\\"numero_factura\\\":\\\"\\\",\\\"fecha_emision\\\":\\\"\\\",\\\"fecha_vencimiento\\\":\\\"\\\",\\\"moneda\\\":\\\"\\\",\\\"subtotal\\\":0,\\\"iva\\\":0,\\\"otros_impuestos\\\":0,\\\"total\\\":0,\\\"orden_compra\\\":\\\"\\\",\\\"concepto\\\":\\\"\\\",\\\"categoria_gasto\\\":\\\"\\\",\\\"resumen_ia\\\":\\\"\\\",\\\"confianza_extraccion\\\":0}. Reglas: 1) fechas en formato YYYY-MM-DD; 2) importes como números sin símbolos; 3) campos ausentes vacíos; 4) confianza_extraccion entre 0 y 100; 5) categoria_gasto debe ser una de estas opciones: Servicios, Tecnología, Infraestructura, Logística, Marketing, Capacitación, Compras generales, Mantenimiento, Impuestos, Viajes u Otros.\"\n        }\n      ]\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "c88c58d0-41d7-4053-be67-c459143eb43f",
+      "name": "Extraer datos de factura con OpenAI",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ======================================================\n// VALIDACIÓN DOCUMENTAL DE LA FACTURA\n// Este nodo valida únicamente los datos extraídos por IA.\n// Todavía no valida proveedor, OC ni duplicados contra Airtable.\n// ======================================================\n\nconst factura = { ...$json };\n\nconst errores = [];\nconst advertencias = [];\n\n// Umbral propuesto para enviar la factura a revisión.\n// Puede modificarse después de las pruebas.\nconst UMBRAL_CONFIANZA = 80;\n\n// Diferencia máxima admitida entre el total informado\n// y la suma de subtotal + impuestos.\nconst TOLERANCIA_IMPORTES = 0.05;\n\nconst CATEGORIAS_VALIDAS = [\n  'Servicios',\n  'Tecnología',\n  'Infraestructura',\n  'Logística',\n  'Marketing',\n  'Capacitación',\n  'Compras generales',\n  'Mantenimiento',\n  'Impuestos',\n  'Viajes',\n  'Otros',\n];\n\nconst MONEDAS_VALIDAS = ['ARS', 'USD', 'EUR'];\n\n// ------------------------------------------------------\n// FUNCIONES AUXILIARES\n// ------------------------------------------------------\n\nfunction estaVacio(valor) {\n  return (\n    valor === null ||\n    valor === undefined ||\n    (typeof valor === 'string' && valor.trim() === '')\n  );\n}\n\nfunction convertirNumero(valor) {\n  if (estaVacio(valor)) {\n    return null;\n  }\n\n  const numero = Number(valor);\n\n  return Number.isFinite(numero) ? numero : null;\n}\n\nfunction fechaValida(valor) {\n  if (estaVacio(valor)) {\n    return false;\n  }\n\n  const texto = String(valor).trim();\n\n  // Verifica el formato YYYY-MM-DD.\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(texto)) {\n    return false;\n  }\n\n  const [anio, mes, dia] = texto.split('-').map(Number);\n  const fecha = new Date(Date.UTC(anio, mes - 1, dia));\n\n  // Verifica que la fecha exista realmente.\n  return (\n    fecha.getUTCFullYear() === anio &&\n    fecha.getUTCMonth() === mes - 1 &&\n    fecha.getUTCDate() === dia\n  );\n}\n\nfunction normalizarMoneda(valor) {\n  if (estaVacio(valor)) {\n    return null;\n  }\n\n  const moneda = String(valor)\n    .trim()\n    .toUpperCase()\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '');\n\n  const equivalencias = {\n    ARS: 'ARS',\n    PESO: 'ARS',\n    PESOS: 'ARS',\n    'PESO ARGENTINO': 'ARS',\n    'PESOS ARGENTINOS': 'ARS',\n\n    USD: 'USD',\n    DOLAR: 'USD',\n    DOLARES: 'USD',\n    'DOLAR ESTADOUNIDENSE': 'USD',\n\n    EUR: 'EUR',\n    EURO: 'EUR',\n    EUROS: 'EUR',\n  };\n\n  return equivalencias[moneda] ?? moneda;\n}\n\nfunction normalizarCuit(valor) {\n  if (estaVacio(valor)) {\n    return null;\n  }\n\n  return String(valor).replace(/\\D/g, '');\n}\n\n// ------------------------------------------------------\n// NORMALIZACIÓN DE DATOS\n// ------------------------------------------------------\n\nfactura.proveedor = estaVacio(factura.proveedor)\n  ? null\n  : String(factura.proveedor).trim();\n\nfactura.cuit_proveedor = estaVacio(factura.cuit_proveedor)\n  ? null\n  : String(factura.cuit_proveedor).trim();\n\nfactura.numero_factura = estaVacio(factura.numero_factura)\n  ? null\n  : String(factura.numero_factura).trim();\n\nfactura.fecha_emision = estaVacio(factura.fecha_emision)\n  ? null\n  : String(factura.fecha_emision).trim();\n\nfactura.fecha_vencimiento = estaVacio(factura.fecha_vencimiento)\n  ? null\n  : String(factura.fecha_vencimiento).trim();\n\nfactura.moneda = normalizarMoneda(factura.moneda);\n\nfactura.subtotal = convertirNumero(factura.subtotal);\nfactura.iva = convertirNumero(factura.iva);\nfactura.otros_impuestos = convertirNumero(factura.otros_impuestos);\nfactura.total = convertirNumero(factura.total);\n\nfactura.orden_compra = estaVacio(factura.orden_compra)\n  ? null\n  : String(factura.orden_compra).trim();\n\nfactura.concepto = estaVacio(factura.concepto)\n  ? null\n  : String(factura.concepto).trim();\n\nfactura.categoria_gasto = estaVacio(factura.categoria_gasto)\n  ? null\n  : String(factura.categoria_gasto).trim();\n\nfactura.resumen_ia = estaVacio(factura.resumen_ia)\n  ? null\n  : String(factura.resumen_ia).trim();\n\nfactura.confianza_extraccion = convertirNumero(\n  factura.confianza_extraccion,\n);\n\n// ------------------------------------------------------\n// VALIDACIÓN DE CAMPOS OBLIGATORIOS\n// ------------------------------------------------------\n\nif (estaVacio(factura.proveedor)) {\n  errores.push('Proveedor no identificado');\n}\n\nif (estaVacio(factura.cuit_proveedor)) {\n  errores.push('CUIT del proveedor no identificado');\n} else {\n  const cuitNormalizado = normalizarCuit(factura.cuit_proveedor);\n\n  if (cuitNormalizado.length !== 11) {\n    errores.push('El CUIT del proveedor no tiene 11 dígitos');\n  }\n}\n\nif (estaVacio(factura.numero_factura)) {\n  errores.push('Número de factura no identificado');\n}\n\nif (estaVacio(factura.fecha_emision)) {\n  errores.push('Fecha de emisión no identificada');\n} else if (!fechaValida(factura.fecha_emision)) {\n  errores.push('La fecha de emisión no tiene un formato válido');\n}\n\n// Fecha de vencimiento: se valida solo cuando está informada.\nif (\n  !estaVacio(factura.fecha_vencimiento) &&\n  !fechaValida(factura.fecha_vencimiento)\n) {\n  errores.push('La fecha de vencimiento no tiene un formato válido');\n}\n\nif (estaVacio(factura.moneda)) {\n  errores.push('Moneda no identificada');\n} else if (!MONEDAS_VALIDAS.includes(factura.moneda)) {\n  errores.push(\n    `Moneda no admitida: ${factura.moneda}. Valores permitidos: ARS, USD o EUR`,\n  );\n}\n\nif (factura.total === null) {\n  errores.push('Importe total no identificado o inválido');\n} else if (factura.total <= 0) {\n  errores.push('El importe total debe ser mayor que cero');\n}\n\nif (estaVacio(factura.orden_compra)) {\n  errores.push('Orden de compra no identificada');\n}\n\n// ------------------------------------------------------\n// VALIDACIÓN DE IMPORTES\n// ------------------------------------------------------\n\nif (factura.subtotal !== null && factura.subtotal < 0) {\n  errores.push('El subtotal no puede ser negativo');\n}\n\nif (factura.iva !== null && factura.iva < 0) {\n  errores.push('El IVA no puede ser negativo');\n}\n\nif (\n  factura.otros_impuestos !== null &&\n  factura.otros_impuestos < 0\n) {\n  errores.push('Los otros impuestos no pueden ser negativos');\n}\n\n// Se compara el total únicamente cuando todos los componentes\n// necesarios fueron identificados.\nif (\n  factura.subtotal !== null &&\n  factura.iva !== null &&\n  factura.otros_impuestos !== null &&\n  factura.total !== null\n) {\n  const totalCalculado =\n    factura.subtotal +\n    factura.iva +\n    factura.otros_impuestos;\n\n  const diferencia = Math.abs(totalCalculado - factura.total);\n\n  if (diferencia > TOLERANCIA_IMPORTES) {\n    errores.push(\n      `El total informado (${factura.total}) no coincide con subtotal más impuestos (${totalCalculado})`,\n    );\n  }\n} else {\n  advertencias.push(\n    'No fue posible comprobar la suma de subtotal e impuestos porque falta al menos uno de los importes',\n  );\n}\n\n// ------------------------------------------------------\n// VALIDACIÓN DE CATEGORÍA\n// ------------------------------------------------------\n\nif (estaVacio(factura.categoria_gasto)) {\n  advertencias.push('Categoría de gasto no identificada');\n} else if (!CATEGORIAS_VALIDAS.includes(factura.categoria_gasto)) {\n  errores.push(\n    `Categoría de gasto no admitida: ${factura.categoria_gasto}`,\n  );\n}\n\n// ------------------------------------------------------\n// VALIDACIÓN DE CONFIANZA DE EXTRACCIÓN\n// ------------------------------------------------------\n\nif (factura.confianza_extraccion === null) {\n  errores.push('La IA no informó el nivel de confianza');\n} else if (\n  factura.confianza_extraccion < 0 ||\n  factura.confianza_extraccion > 100\n) {\n  errores.push(\n    'El nivel de confianza debe estar comprendido entre 0 y 100',\n  );\n} else if (factura.confianza_extraccion < UMBRAL_CONFIANZA) {\n  errores.push(\n    `Confianza de extracción inferior al umbral de ${UMBRAL_CONFIANZA}%`,\n  );\n}\n\n// ------------------------------------------------------\n// RESULTADO\n// ------------------------------------------------------\n\nconst requiereRevision = errores.length > 0;\n\nreturn {\n  json: {\n    ...factura,\n\n    requiere_revision: requiereRevision,\n\n    motivo_revision: requiereRevision\n      ? errores.join(' | ')\n      : '',\n\n    advertencias_validacion: advertencias.join(' | '),\n\n    cantidad_errores_validacion: errores.length,\n\n    cantidad_advertencias_validacion: advertencias.length,\n\n    resultado_validacion_documental: requiereRevision\n      ? 'Con excepciones'\n      : 'Validación documental superada',\n\n    estado_sugerido: requiereRevision\n      ? 'Requiere revisión'\n      : 'Procesado por IA',\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1392,
+        0
+      ],
+      "id": "586e9b17-6acf-4069-a360-62c7071116d7",
+      "name": "Validar datos extraídos de la factura"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_BASE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Gestión inteligente de facturas de proveedores"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REEMPLAZAR_CON_TABLE_ID_AIRTABLE",
+          "mode": "list",
+          "cachedResultName": "Facturas"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID factura": "={{ $('Guardar factura').item.json.fields['ID factura'] }}",
+            "Estado": "Pendiente de aprobación"
+          },
+          "matchingColumns": [
+            "ID factura"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "ID factura",
+              "displayName": "ID factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Número de factura",
+              "displayName": "Número de factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Archivo factura",
+              "displayName": "Archivo factura",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de recepción",
+              "displayName": "Fecha de recepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Canal de entrada",
+              "displayName": "Canal de entrada",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "mail",
+                  "value": "mail"
+                },
+                {
+                  "name": "Webhook",
+                  "value": "Webhook"
+                },
+                {
+                  "name": "Portal de proveedores",
+                  "value": "Portal de proveedores"
+                },
+                {
+                  "name": "Carga manual",
+                  "value": "Carga manual"
+                },
+                {
+                  "name": "API ERP",
+                  "value": "API ERP"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Proveedor",
+              "displayName": "Proveedor",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Orden de compra",
+              "displayName": "Orden de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de emisión",
+              "displayName": "Fecha de emisión",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Moneda",
+              "displayName": "Moneda",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "pesos",
+                  "value": "pesos"
+                },
+                {
+                  "name": "dolares",
+                  "value": "dolares"
+                },
+                {
+                  "name": "Euros",
+                  "value": "Euros"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Importe total",
+              "displayName": "Importe total",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Categoría de gasto",
+              "displayName": "Categoría de gasto",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Servicios",
+                  "value": "Servicios"
+                },
+                {
+                  "name": "Tecnología",
+                  "value": "Tecnología"
+                },
+                {
+                  "name": "Infraestructura",
+                  "value": "Infraestructura"
+                },
+                {
+                  "name": "Logística",
+                  "value": "Logística"
+                },
+                {
+                  "name": "Marketing",
+                  "value": "Marketing"
+                },
+                {
+                  "name": "Capacitación",
+                  "value": "Capacitación"
+                },
+                {
+                  "name": "Compras generales",
+                  "value": "Compras generales"
+                },
+                {
+                  "name": "Mantenimiento",
+                  "value": "Mantenimiento"
+                },
+                {
+                  "name": "Impuestos",
+                  "value": "Impuestos"
+                },
+                {
+                  "name": "Viajes",
+                  "value": "Viajes"
+                },
+                {
+                  "name": "Otros",
+                  "value": "Otros"
+                }
+              ],
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Resumen IA",
+              "displayName": "Resumen IA",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Motivo de excepción",
+              "displayName": "Motivo de excepción",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Estado",
+              "displayName": "Estado",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pendiente",
+                  "value": "Pendiente"
+                },
+                {
+                  "name": "En validación inicial",
+                  "value": "En validación inicial"
+                },
+                {
+                  "name": "Procesado por IA",
+                  "value": "Procesado por IA"
+                },
+                {
+                  "name": "Requiere revisión",
+                  "value": "Requiere revisión"
+                },
+                {
+                  "name": "Pendiente de aprobación",
+                  "value": "Pendiente de aprobación"
+                },
+                {
+                  "name": "Aprobado por humano",
+                  "value": "Aprobado por humano"
+                },
+                {
+                  "name": "Rechazado por humano",
+                  "value": "Rechazado por humano"
+                },
+                {
+                  "name": "Error IA",
+                  "value": "Error IA"
+                },
+                {
+                  "name": "Finalizado",
+                  "value": "Finalizado"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Responsable aprobación",
+              "displayName": "Responsable aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Fecha de aprobación",
+              "displayName": "Fecha de aprobación",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Última actualización",
+              "displayName": "Última actualización",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            },
+            {
+              "id": "Órdenes de compra",
+              "displayName": "Órdenes de compra",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Aprobaciones",
+              "displayName": "Aprobaciones",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Logs de errores",
+              "displayName": "Logs de errores",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Gmail Thread ID",
+              "displayName": "Gmail Thread ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        2160,
+        32
+      ],
+      "id": "a79b5d65-0942-4cb2-add2-7fdf8f6a1248",
+      "name": "Actualizar factura - Pendiente de aprobación"
+    },
+    {
+      "parameters": {
+        "resume": "form",
+        "formTitle": "Aprobación de factura de proveedor",
+        "formDescription": "={{ \n  'Revisá la factura ' +\n  $('Validar datos extraídos de la factura').item.json.numero_factura +\n  ' del proveedor ' +\n  $('Validar datos extraídos de la factura').item.json.proveedor +\n  ', por un importe total de ' +\n  $('Validar datos extraídos de la factura').item.json.total +\n  ' ' +\n  $('Validar datos extraídos de la factura').item.json.moneda +\n  '.'\n}}",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "decision_aprobador",
+              "fieldType": "radio",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Aprobar"
+                  },
+                  {
+                    "option": "Rechazar"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "comentario_aprobador",
+              "fieldType": "textarea"
+            }
+          ]
+        },
+        "limitWaitTime": true,
+        "resumeAmount": 24,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2576,
+        32
+      ],
+      "id": "4a991680-a4e8-4dd7-870f-da4143f365f4",
+      "name": "Esperar decisión del aprobador"
+    },
+    {
+      "parameters": {
+        "sendTo": "correo-demostracion@example.com",
+        "subject": "={{\n  'Factura aprobada - ' +\n  $('Validar datos extraídos de la factura').item.json.numero_factura\n}}",
+        "message": "={{\n`La factura fue aprobada correctamente.\n\nNúmero de factura: ${$('Validar datos extraídos de la factura').item.json.numero_factura}\nProveedor: ${$('Validar datos extraídos de la factura').item.json.proveedor}\nOrden de compra: ${$('Validar datos extraídos de la factura').item.json.orden_compra}\nImporte total: ${$('Validar datos extraídos de la factura').item.json.total}\nMoneda: ${$('Validar datos extraídos de la factura').item.json.moneda}\n\nEstado: Aprobado por humano\nFecha de aprobación: ${$now}\n\nComentario del aprobador:\n${$('Esperar decisión del aprobador').item.json.comentario_aprobador || 'Sin comentarios'}\n\nLa información fue actualizada en Airtable.`\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3616,
+        -64
+      ],
+      "id": "9e8ad192-92b3-43b7-8fc8-d61177f71d05",
+      "name": "Notificar aprobación de factura"
+    },
+    {
+      "parameters": {
+        "sendTo": "correo-demostracion@example.com",
+        "subject": "={{\n  'Factura con errores de validación - ' +\n  $('Validar datos extraídos de la factura').item.json.numero_factura\n}}",
+        "message": "={{\n`Se detectaron inconsistencias en una factura y el proceso de aprobación fue detenido.\n\nNúmero de factura: ${$('Validar datos extraídos de la factura').item.json.numero_factura}\nProveedor: ${$('Validar datos extraídos de la factura').item.json.proveedor}\nOrden de compra: ${$('Validar datos extraídos de la factura').item.json.orden_compra}\nImporte total informado: ${$('Validar datos extraídos de la factura').item.json.total}\nMoneda: ${$('Validar datos extraídos de la factura').item.json.moneda}\n\nMotivo de la excepción:\n${$('Validar datos extraídos de la factura').item.json.motivo_revision}\n\nEstado de la factura: Requiere revisión\n\nPor favor, revise y corrija los datos o el documento y vuelva a enviar la factura para iniciar una nueva validación.\n\nLa incidencia fue registrada en Airtable para su seguimiento.`\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2160,
+        -112
+      ],
+      "id": "cfb958c5-93b5-4bbe-bb83-fd797125119e",
+      "name": "Notificar factura con errores de validación"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "If": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Upload a file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload a file": {
+      "main": [
+        [
+          {
+            "node": "Extraer datos de factura con OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar respuesta IA": {
+      "main": [
+        [
+          {
+            "node": "Validar datos extraídos de la factura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar factura": {
+      "main": [
+        [
+          {
+            "node": "¿Requiere revisión?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Requiere revisión?": {
+      "main": [
+        [
+          {
+            "node": "Registrar error de validación",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Crear aprobación pendiente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crear aprobación pendiente": {
+      "main": [
+        [
+          {
+            "node": "Actualizar factura - Pendiente de aprobación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Esperar decisión del aprobador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Aprobó la factura?": {
+      "main": [
+        [
+          {
+            "node": "Update record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update record1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update record": {
+      "main": [
+        [
+          {
+            "node": "Actualizar factura - Aprobada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update record1": {
+      "main": [
+        [
+          {
+            "node": "Actualizar factura - Rechazada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar factura - Rechazada": {
+      "main": [
+        [
+          {
+            "node": "Notificar rechazo de factura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a record": {
+      "main": [
+        [
+          {
+            "node": "Notificar error de procesamiento IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recepción de factura por Gmail": {
+      "main": [
+        [
+          {
+            "node": "Obtener correo y descargar factura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Obtener correo y descargar factura": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraer datos de factura con OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Interpretar respuesta IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create a record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar datos extraídos de la factura": {
+      "main": [
+        [
+          {
+            "node": "Guardar factura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar factura - Pendiente de aprobación": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Esperar decisión del aprobador": {
+      "main": [
+        [
+          {
+            "node": "¿Aprobó la factura?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar factura - Aprobada": {
+      "main": [
+        [
+          {
+            "node": "Notificar aprobación de factura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar error de validación": {
+      "main": [
+        [
+          {
+            "node": "Notificar factura con errores de validación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "fdb7af9b-5d64-4bd8-8e41-40dc021df049",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "570d7e889d454795e40bb60f67e2c1e5254b6e6c6e28ded39dbda5a250bb84e6"
+  },
+  "nodeGroups": [],
+  "id": "Af2aLl1iwhlLWdmN",
+  "tags": []
+}
