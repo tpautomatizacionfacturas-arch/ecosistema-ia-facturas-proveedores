@@ -256,15 +256,18 @@ Para probar el flujo:
 - No se deben publicar URLs de reanudación del nodo Wait.
 - No se deben publicar correos personales, tokens ni webhooks privados.
 
-## 10. Contenido del repositorio
+## 10. Dashboard ejecutivo
+
+El ecosistema cuenta con un panel centralizado en Airtable para monitorear el estado operativo del flujo, incluyendo facturas procesadas, aprobaciones humanas, rechazos y errores registrados.
+Enlace público https://airtable.com/appAUOggvIu7XpHSt/pagGXP7INqXl0mT0A
+
+## 11. Contenido del repositorio
 
 - `01-arquitectura/`: diagrama de arquitectura.
 - `02-flujo-n8n/`: exportación JSON del flujo.
 - `03-documentacion/`: documento principal de la entrega.
-- `04-evidencias/`: capturas del funcionamiento.
-- `05-pruebas/`: evidencias de los casos de prueba.
-- `06-video/`: video o enlace a la demostración.
+- `04-evidencias/`: video o enlace a la demostración.
 
-## 11. Consideraciones
+## 12. Consideraciones
 
 Este proyecto corresponde a un MVP académico. Para una implementación productiva se recomienda incorporar validación real contra proveedores y órdenes de compra, detección de duplicados, control de permisos, monitoreo, reintentos y conexión con un ERP.
