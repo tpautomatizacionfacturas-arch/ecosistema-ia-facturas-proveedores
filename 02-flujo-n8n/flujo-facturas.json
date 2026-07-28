@@ -1,5 +1,5 @@
 {
-  "name": "My workflow",
+  "name": "Gestión inteligente de facturas de proveedores",
   "nodes": [
     {
       "parameters": {
@@ -1953,7 +1953,7 @@
         "nodeCredentialType": "openAiApi",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"modelo-prueba-error\",\n  \"max_output_tokens\": 1000,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_id\": \"{{ $json.id }}\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Analiza la factura adjunta y devuelve exclusivamente un JSON válido, sin markdown, sin explicaciones y sin texto adicional. No inventes datos. Devuelve exactamente esta estructura: {\\\"proveedor\\\":\\\"\\\",\\\"cuit_proveedor\\\":\\\"\\\",\\\"numero_factura\\\":\\\"\\\",\\\"fecha_emision\\\":\\\"\\\",\\\"fecha_vencimiento\\\":\\\"\\\",\\\"moneda\\\":\\\"\\\",\\\"subtotal\\\":0,\\\"iva\\\":0,\\\"otros_impuestos\\\":0,\\\"total\\\":0,\\\"orden_compra\\\":\\\"\\\",\\\"concepto\\\":\\\"\\\",\\\"categoria_gasto\\\":\\\"\\\",\\\"resumen_ia\\\":\\\"\\\",\\\"confianza_extraccion\\\":0}. Reglas: 1) fechas en formato YYYY-MM-DD; 2) importes como números sin símbolos; 3) campos ausentes vacíos; 4) confianza_extraccion entre 0 y 100; 5) categoria_gasto debe ser una de estas opciones: Servicios, Tecnología, Infraestructura, Logística, Marketing, Capacitación, Compras generales, Mantenimiento, Impuestos, Viajes u Otros.\"\n        }\n      ]\n    }\n  ]\n}",
+        "jsonBody": "={\n  \"model\": \"gpt-4.1-mini\",\n  \"max_output_tokens\": 1000,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_id\": \"{{ $json.id }}\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Analiza la factura adjunta y devuelve exclusivamente un JSON válido, sin markdown, sin explicaciones y sin texto adicional. No inventes datos. Devuelve exactamente esta estructura: {\\\"proveedor\\\":\\\"\\\",\\\"cuit_proveedor\\\":\\\"\\\",\\\"numero_factura\\\":\\\"\\\",\\\"fecha_emision\\\":\\\"\\\",\\\"fecha_vencimiento\\\":\\\"\\\",\\\"moneda\\\":\\\"\\\",\\\"subtotal\\\":0,\\\"iva\\\":0,\\\"otros_impuestos\\\":0,\\\"total\\\":0,\\\"orden_compra\\\":\\\"\\\",\\\"concepto\\\":\\\"\\\",\\\"categoria_gasto\\\":\\\"\\\",\\\"resumen_ia\\\":\\\"\\\",\\\"confianza_extraccion\\\":0}. Reglas: 1) fechas en formato YYYY-MM-DD; 2) importes como números sin símbolos; 3) campos ausentes vacíos; 4) confianza_extraccion entre 0 y 100; 5) categoria_gasto debe ser una de estas opciones: Servicios, Tecnología, Infraestructura, Logística, Marketing, Capacitación, Compras generales, Mantenimiento, Impuestos, Viajes u Otros.\"\n        }\n      ]\n    }\n  ]\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
